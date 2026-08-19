@@ -1,0 +1,522 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1.0" />
+<title>Swarm — Local-First Agent</title>
+
+<style>
+/* ═══════════════════════════════════════════════════════════════════════
+   RESET + BASE
+   ═══════════════════════════════════════════════════════════════════════ */
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+html,body{height:100%;overflow:hidden}
+body{
+  font-family:Inter,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;
+  background:hsl(240 30% 14%);
+  color:hsl(240 11% 97%);
+  font-size:14px;
+  line-height:1.5;
+  -webkit-font-smoothing:antialiased;
+}
+button{cursor:pointer;font:inherit;border:none;background:none;color:inherit}
+textarea{font:inherit;resize:none}
+::placeholder{color:hsl(240 8% 47%)}
+:focus-visible{outline:2px solid hsl(229 91% 65%);outline-offset:2px}
+::-webkit-scrollbar{width:6px}
+::-webkit-scrollbar-track{background:transparent}
+::-webkit-scrollbar-thumb{background:hsl(240 17% 29%);border-radius:3px}
+
+/* ═══════════════════════════════════════════════════════════════════════
+   APP LAYOUT
+   ═══════════════════════════════════════════════════════════════════════ */
+#app{display:flex;flex-direction:column;height:100dvh}
+
+/* ── Status Bar ── */
+#status-bar{
+  display:flex;align-items:center;gap:8px;
+  padding:4px 12px;
+  height:28px;
+  background:hsl(240 21% 17%);
+  border-bottom:1px solid hsl(240 17% 29%);
+  font-size:12px;color:hsl(240 11% 72%);
+  flex-shrink:0;
+}
+#status-bar .status-dot{
+  width:8px;height:8px;border-radius:50%;flex-shrink:0;
+}
+#status-bar .status-dot.idle{background:hsl(240 10% 58%)}
+#status-bar .status-dot.ready{background:hsl(160 64% 52%)}
+#status-bar .status-dot.error{background:hsl(0 83% 60%)}
+#status-bar .status-dot.generating{background:hsl(229 91% 65%);animation:pulse 1s infinite}
+#status-bar .status-text{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.4}}
+
+/* ── Header ── */
+#header{
+  display:flex;align-items:center;justify-content:space-between;
+  padding:0 12px;height:36px;
+  border-bottom:1px solid hsl(240 17% 29%);
+  flex-shrink:0;
+}
+#header .brand{
+  font-size:13px;font-weight:600;color:hsl(229 91% 65%);
+  display:flex;align-items:center;gap:6px;
+}
+#header .brand svg{width:16px;height:16px}
+#header .header-actions{display:flex;align-items:center;gap:4px}
+#header .header-actions button{
+  padding:4px 8px;border-radius:6px;font-size:12px;color:hsl(240 11% 72%);
+}
+#header .header-actions button:hover{background:hsl(240 18% 20%);color:hsl(240 11% 97%)}
+
+/* ── Chat Area ── */
+#chat-area{flex:1;overflow-y:auto;overflow-x:hidden;padding:16px 12px}
+#chat-area .empty-state{
+  display:flex;flex-direction:column;align-items:center;justify-content:center;
+  height:100%;color:hsl(240 10% 58%);text-align:center;gap:8px;
+}
+#chat-area .empty-state h2{font-size:16px;font-weight:500;color:hsl(240 11% 72%)}
+#chat-area .empty-state p{font-size:13px;max-width:320px}
+
+/* ── Messages ── */
+.message-group{margin-bottom:12px}
+.message{
+  padding:10px 14px;border-radius:12px;max-width:85%;line-height:1.5;
+  white-space:pre-wrap;word-wrap:break-word;
+  animation:fadeIn .2s ease-out;
+}
+.message.user{
+  background:hsl(233 81% 59%);color:hsl(240 11% 97%);
+  margin-left:auto;border-bottom-right-radius:4px;
+}
+.message.assistant{
+  background:hsl(240 21% 17%);color:hsl(240 11% 97%);
+  margin-right:auto;border-bottom-left-radius:4px;
+  border:1px solid hsl(240 17% 29%);
+}
+.message.system{
+  background:transparent;color:hsl(240 10% 58%);font-size:12px;text-align:center;max-width:100%;
+  padding:4px 8px;
+}
+.message .msg-label{font-size:11px;font-weight:600;opacity:.6;margin-bottom:4px}
+.message .msg-content{line-height:1.55}
+.message .msg-timestamp{font-size:10px;opacity:.4;margin-top:4px;text-align:right}
+
+@keyframes fadeIn{from{opacity:0;transform:translateY(4px)}to{opacity:1;transform:translateY(0)}}
+
+/* Fallback tag — visible label on fallback/offline responses */
+.message.assistant .fallback-tag{
+  display:inline-block;margin-top:6px;padding:2px 8px;border-radius:4px;
+  font-size:10px;font-weight:600;line-height:1.4;
+  background:hsl(38 92% 50% / .15);color:hsl(38 92% 50%);
+  border:1px solid hsl(38 92% 50% / .3);
+}
+
+/* Streaming cursor (simple blink while waiting) */
+.message.assistant.streaming .msg-content::after{
+  content:'▊';animation:blink .8s step-end infinite;color:hsl(229 91% 65%);
+}
+@keyframes blink{50%{opacity:0}}
+
+/* ── Composer ── */
+#composer{
+  padding:8px 12px 12px;
+  border-top:1px solid hsl(240 17% 29%);
+  background:hsl(240 30% 14%);
+  flex-shrink:0;
+}
+#composer .composer-inner{
+  display:flex;gap:8px;align-items:flex-end;
+  background:hsl(240 21% 17%);
+  border:1px solid hsl(240 17% 29%);
+  border-radius:12px;
+  padding:6px 8px;
+  max-width:720px;margin:0 auto;
+  transition:border-color .15s;
+}
+#composer .composer-inner:focus-within{border-color:hsl(229 91% 65%)}
+#composer textarea{
+  flex:1;background:transparent;border:none;color:hsl(240 11% 97%);
+  padding:4px 0;min-height:24px;max-height:120px;
+  font-size:14px;line-height:1.5;
+}
+#composer textarea:focus{outline:none}
+#composer .char-count{
+  font-size:11px;color:hsl(240 10% 58%);padding:2px 0;flex-shrink:0;
+  align-self:center;
+}
+#composer .char-count.over{color:hsl(0 83% 60%)}
+#composer .composer-actions{
+  display:flex;align-items:center;gap:4px;flex-shrink:0;
+}
+#composer button.send-btn{
+  padding:6px 16px;border-radius:8px;
+  background:hsl(229 91% 65%);color:hsl(240 28% 10%);
+  font-size:13px;font-weight:600;
+  transition:opacity .15s;
+}
+#composer button.send-btn:hover{opacity:.85}
+#composer button.send-btn:disabled{opacity:.3;cursor:not-allowed}
+#composer button.stop-btn{
+  padding:6px 12px;border-radius:8px;
+  background:hsl(0 83% 60%);color:white;font-size:13px;font-weight:600;
+}
+#composer .composer-hint{
+  font-size:11px;color:hsl(240 10% 58%);padding:2px 4px;
+  text-align:center;margin-top:4px;
+}
+
+/* ── Model badge ── */
+#model-badge{
+  position:fixed;top:32px;right:8px;
+  padding:2px 8px;border-radius:4px;
+  font-size:10px;font-weight:600;
+  background:hsl(41 96% 56% / .2);color:hsl(41 96% 56%);
+  border:1px solid hsl(41 96% 56% / .3);
+  pointer-events:none;z-index:100;
+}
+
+/* ── Responsive ── */
+@media(max-width:640px){
+  #chat-area{padding:12px 8px}
+  .message{max-width:92%;padding:8px 12px}
+  #composer{padding:6px 8px 10px}
+  #composer .composer-inner{padding:4px 6px}
+  #header{padding:0 8px}
+  #status-bar{padding:4px 8px}
+}
+</style>
+</head>
+<body>
+
+<div id="app">
+  <!-- Status Bar -->
+  <div id="status-bar" data-testid="status-bar">
+    <span class="status-dot idle" data-testid="status-dot"></span>
+    <span class="status-text" data-testid="status-text">Connecting to server…</span>
+  </div>
+
+  <!-- Header -->
+  <div id="header" data-testid="header">
+    <div class="brand">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/></svg>
+      Swarm
+    </div>
+    <div class="header-actions">
+      <button id="clear-chat-btn" data-testid="clear-chat-btn" title="Clear conversation">Clear</button>
+    </div>
+  </div>
+
+  <!-- Chat area -->
+  <div id="chat-area" data-testid="chat-area" role="log" aria-label="Chat messages">
+    <div class="empty-state" id="empty-state" data-testid="empty-state">
+      <h2>Welcome to Swarm</h2>
+      <p>Local-first agent chat powered by Node + llama.cpp. Type a message to start.</p>
+    </div>
+  </div>
+
+  <!-- Composer -->
+  <div id="composer" data-testid="composer">
+    <div class="composer-inner">
+      <textarea
+        id="composer-input"
+        data-testid="composer-input"
+        placeholder="Type a message…"
+        maxlength="2000"
+        rows="1"
+        aria-label="Message input"
+      ></textarea>
+      <span class="char-count" id="char-count" data-testid="char-count">0/2000</span>
+      <div class="composer-actions">
+        <button class="send-btn" id="send-btn" data-testid="send-btn" disabled>Send</button>
+      </div>
+    </div>
+    <div class="composer-hint" data-testid="composer-hint">Press Enter to send · Shift+Enter for newline</div>
+  </div>
+</div>
+
+<!-- Model badge (shown for fake/fallback) -->
+<div id="model-badge" style="display:none" data-testid="model-badge"></div>
+
+<script>
+/* ═══════════════════════════════════════════════════════════════════════
+   SWARM — Dumb Frontend
+   ═══════════════════════════════════════════════════════════════════════
+
+   Minimal UI that sends messages to POST /api/chat and displays responses.
+   All intelligence lives on the server. No model runs in the browser.
+
+   Fake mode (testing): ?mode=success|empty|error|overlong|timeout
+   ─ passed to server in the request body.
+   ═══════════════════════════════════════════════════════════════════════ */
+
+(function(){
+'use strict';
+
+// ═══════════════════════════════════════════════════════════════════════
+// STATE
+// ═══════════════════════════════════════════════════════════════════════
+
+const urlParams = new URLSearchParams(window.location.search);
+const MODE = urlParams.get('mode') || null;
+const VALID_MODES = ['success','empty','error','timeout'];
+const isMode = MODE && VALID_MODES.includes(MODE);
+const USER_ID_KEY = 'swarm_user_id';
+const SESSION_ID_KEY = 'swarm_session_id';
+
+function stableId(storageKey, prefix) {
+  let value = localStorage.getItem(storageKey);
+  if (!value) {
+    value = `${prefix}_${crypto.randomUUID()}`;
+    localStorage.setItem(storageKey, value);
+  }
+  return value;
+}
+
+const USER_ID = stableId(USER_ID_KEY, 'user');
+const SESSION_ID = stableId(SESSION_ID_KEY, 'session');
+
+const state = {
+  messages: [],
+  status: 'idle',
+  statusText: isMode ? 'Fake mode: ' + MODE : 'Connecting to server…',
+  isGenerating: false,
+  modelInfo: null,
+};
+
+const $ = (id) => document.getElementById(id);
+
+// ═══════════════════════════════════════════════════════════════════════
+// API
+// ═══════════════════════════════════════════════════════════════════════
+
+async function sendToServer(userMessage) {
+  const body = {
+    message: userMessage,
+    userId: USER_ID,
+    sessionId: SESSION_ID,
+  };
+  if (MODE) body.mode = MODE;
+
+  const res = await fetch('/api/chat', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) {
+    const errText = await res.text();
+    throw new Error('Server error: ' + (errText || res.statusText));
+  }
+  return await res.json();
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// UI
+// ═══════════════════════════════════════════════════════════════════════
+
+const chatArea = $('chat-area');
+const emptyState = $('empty-state');
+const composerInput = $('composer-input');
+const sendBtn = $('send-btn');
+const charCount = $('char-count');
+const statusDot = document.querySelector('#status-bar .status-dot');
+const statusText = document.querySelector('#status-bar .status-text');
+const composerHint = $('composer-hint');
+const clearBtn = $('clear-chat-btn');
+const modeBadge = $('model-badge');
+
+function updateUI() {
+  // Status
+  statusDot.className = 'status-dot ' + state.status;
+  statusText.textContent = state.statusText;
+
+  // Send button
+  const hasText = composerInput.value.trim().length > 0;
+  sendBtn.disabled = !hasText || state.isGenerating;
+
+  // Char count
+  const len = composerInput.value.length;
+  charCount.textContent = `${len}/2000`;
+  charCount.className = 'char-count' + (len >= 2000 ? ' over' : '');
+
+  // Mode badge
+  if (isMode || state.modelInfo) {
+    const label = isMode ? 'mode: ' + MODE : (state.modelInfo || 'unknown');
+    modeBadge.textContent = label;
+    modeBadge.style.display = '';
+  } else {
+    modeBadge.style.display = 'none';
+  }
+}
+
+function addMessage(role, content, extra) {
+  if (state.messages.length === 0 && emptyState) {
+    emptyState.style.display = 'none';
+  }
+  const msg = { role, content, id: 'msg_' + Date.now() + '_' + Math.random().toString(36).slice(2,7), ...extra };
+  state.messages.push(msg);
+  renderMessage(msg);
+  scrollToBottom();
+  return msg;
+}
+
+function renderMessage(msg) {
+  const el = document.createElement('div');
+  el.className = 'message ' + msg.role;
+  el.setAttribute('data-testid', 'message-bubble');
+  el.setAttribute('data-role', msg.role);
+  el.setAttribute('data-message-id', msg.id);
+
+  let html = '<div class="msg-label">' + (msg.role === 'user' ? 'You' : 'Swarm') + '</div>';
+  if (msg.fallbackLabel) {
+    html += '<div class="fallback-tag">' + escapeHtml(msg.fallbackLabel) + '</div>';
+  }
+  html += '<div class="msg-content">' + escapeHtml(msg.content || '') + '</div>';
+  if (msg.timestamp) {
+    html += '<div class="msg-timestamp">' + new Date(msg.timestamp).toLocaleTimeString() + '</div>';
+  }
+  el.innerHTML = html;
+  if (msg._streaming) el.classList.add('streaming');
+
+  if (emptyState && emptyState.style.display !== 'none') {
+    chatArea.insertBefore(el, emptyState);
+  } else {
+    chatArea.appendChild(el);
+  }
+}
+
+function scrollToBottom() {
+  chatArea.scrollTop = chatArea.scrollHeight;
+}
+
+function escapeHtml(str) {
+  const d = document.createElement('div');
+  d.textContent = str;
+  return d.innerHTML;
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// CORE: send message
+// ═══════════════════════════════════════════════════════════════════════
+
+async function sendMessage(text) {
+  if (state.isGenerating) return;
+  if (!text.trim()) return;
+
+  state.isGenerating = true;
+  state.status = 'generating';
+  state.statusText = 'Generating…';
+  updateUI();
+
+  // Add user message
+  addMessage('user', text, { timestamp: Date.now() });
+
+  // Create placeholder
+  const placeholder = addMessage('assistant', '▊', { _streaming: true, timestamp: Date.now() });
+
+  try {
+    const result = await sendToServer(text);
+
+    state.modelInfo = result.model;
+    let responseText = result.response || '';
+
+    // Update placeholder
+    const lastMsg = state.messages.find(m => m.id === placeholder.id);
+    if (lastMsg) {
+      lastMsg.content = responseText || '[No response]';
+      lastMsg._streaming = false;
+      lastMsg.fallbackLabel = result.fallbackLabel || null;
+      const el = chatArea.querySelector('[data-message-id="' + lastMsg.id + '"]');
+      if (el) {
+        el.classList.remove('streaming');
+        el.querySelector('.msg-content').textContent = lastMsg.content;
+        // Add fallback tag element if label is present
+        if (result.fallbackLabel && !el.querySelector('.fallback-tag')) {
+          const tag = document.createElement('div');
+          tag.className = 'fallback-tag';
+          tag.textContent = result.fallbackLabel;
+          el.insertBefore(tag, el.querySelector('.msg-content'));
+        }
+      }
+    }
+
+    state.status = 'ready';
+    if (result.model === 'fallback') {
+      state.statusText = 'Fallback mode — model unavailable';
+    } else if (result.model === 'fake') {
+      state.statusText = 'Fake mode';
+    } else {
+      state.statusText = 'Model: ' + result.model;
+    }
+    updateUI();
+
+  } catch (err) {
+    const lastMsg = state.messages.find(m => m.id === placeholder.id);
+    if (lastMsg) {
+      lastMsg.content = "I couldn't reach the server. Please try again.";
+      lastMsg._streaming = false;
+      const el = chatArea.querySelector('[data-message-id="' + lastMsg.id + '"]');
+      if (el) {
+        el.classList.remove('streaming');
+        el.querySelector('.msg-content').textContent = lastMsg.content;
+      }
+    }
+    state.status = 'error';
+    state.statusText = 'Connection error';
+    updateUI();
+  } finally {
+    state.isGenerating = false;
+    updateUI();
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// UI EVENT BINDINGS
+// ═══════════════════════════════════════════════════════════════════════
+
+sendBtn.addEventListener('click', () => {
+  const text = composerInput.value.trim();
+  if (text && !sendBtn.disabled) {
+    composerInput.value = '';
+    updateUI();
+    sendMessage(text);
+  }
+});
+
+composerInput.addEventListener('keydown', (e) => {
+  if (e.key === 'Enter' && !e.shiftKey) {
+    e.preventDefault();
+    const text = composerInput.value.trim();
+    if (text && !sendBtn.disabled) {
+      composerInput.value = '';
+      updateUI();
+      sendMessage(text);
+    }
+  }
+});
+
+composerInput.addEventListener('input', () => {
+  composerInput.style.height = 'auto';
+  composerInput.style.height = Math.min(composerInput.scrollHeight, 120) + 'px';
+  updateUI();
+});
+
+clearBtn.addEventListener('click', () => {
+  chatArea.querySelectorAll('.message').forEach(el => el.remove());
+  state.messages = [];
+  if (emptyState) emptyState.style.display = '';
+  updateUI();
+});
+
+// ═══════════════════════════════════════════════════════════════════════
+// INIT
+// ═══════════════════════════════════════════════════════════════════════
+
+updateUI();
+
+})();
+</script>
+</body>
+</html>
