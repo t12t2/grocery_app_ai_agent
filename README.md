@@ -1,12 +1,43 @@
-# Swarm — Local-First Agent
+# Grocery App AI Agent — Amplitude Agent Analytics Test Bed
 
-**Minimal frontend + backend local-agent app.** The frontend is a dumb HTML
-chat UI. All intelligence — `inspect_message`, orchestration, LLM inference —
-lives in the Node.js server. No build step, no framework, no API keys.
+## Purpose
 
-The server auto-downloads a small GGUF model (Qwen2.5-0.5B-Instruct, ~491 MB) on first
-run and caches it in `~/.node-llama-cpp/models/`. All inference runs locally on
-your CPU/GPU via [node-llama-cpp](https://github.com/withcatai/node-llama-cpp).
+This repo exists to **test [Amplitude's Agent Analytics](https://amplitude.com/agent-analytics)
+functionality** — instrumenting and analyzing usage of an AI agent the way you'd
+instrument any product surface, but for LLM-driven conversations (message-level
+events, sessions, tool calls, fallback/error states, etc.).
+
+The intended end state is a **grocery shopping assistant** demo: a chat agent
+that helps a user build a grocery list, ask about products, and get
+recommendations, while every turn is instrumented for Amplitude so the agent's
+behavior can be analyzed like a normal analytics funnel (engagement, drop-off,
+tool usage, fallback rate, and so on).
+
+> **Status: scaffold only.** The app in this repo right now is the unmodified
+> [`amplitude/swarm`](https://github.com/amplitude/swarm) starter template — a
+> generic local-first chat agent. It does **not** yet contain grocery-specific
+> logic (no product catalog, no list-building tools, no grocery prompts) and it
+> does **not** yet send events to Amplitude. Those are the next build steps;
+> see [Roadmap](#roadmap) below.
+
+---
+
+## What the app currently does
+
+**Minimal frontend + backend local-agent chat app.** The frontend is a dumb
+HTML chat UI (`index.html`). All intelligence — `inspect_message`,
+orchestration, LLM inference — lives in the Node.js server (`server.mjs`). No
+build step, no framework, no API keys.
+
+The server auto-downloads a small GGUF model (Qwen2.5-0.5B-Instruct, ~491 MB)
+on first run and caches it in `~/.node-llama-cpp/models/`. All inference runs
+locally on your CPU/GPU via [node-llama-cpp](https://github.com/withcatai/node-llama-cpp).
+
+At this stage it's a generic conversational agent — you can chat with it, but
+it has no awareness of groceries, products, or shopping lists, and no
+analytics instrumentation. It's the plumbing (chat UI, server, orchestration,
+fallback handling, test harness) that a grocery-domain agent and Amplitude
+instrumentation will be layered on top of.
 
 ---
 
@@ -31,18 +62,20 @@ Open **http://localhost:4173/** in any browser.
 
 ## How it works
 
-| Concern | Swarm |
-|---------|-------|
-| Frontend | `index.html` — dumb chat UI, sends fetch POST to `/api/chat` |
-| Backend | `server.mjs` — static server + `POST /api/chat` endpoint |
-| LLM | `node-llama-cpp` — native Node.js bindings to llama.cpp |
-| Model | Qwen2.5-0.5B-Instruct (Q4_K_M, ~491 MB, auto-downloaded) |
-| Tool | `inspect_message` — deterministic, always runs before response |
-| Fallback | If model load fails → useful static response (no crash) |
-| Fake mode | `SWARM_FAKE=true` — zero imports, zero downloads, zero inference |
-| Cost | $0 (your CPU/GPU) |
-| API keys | None needed |
-| Privacy | Everything runs locally |
+| Concern   | Current implementation                                            |
+| --------- | ------------------------------------------------------------------ |
+| Frontend  | `index.html` — dumb chat UI, sends fetch POST to `/api/chat`       |
+| Backend   | `server.mjs` — static server + `POST /api/chat` endpoint           |
+| LLM       | `node-llama-cpp` — native Node.js bindings to llama.cpp             |
+| Model     | Qwen2.5-0.5B-Instruct (Q4_K_M, ~491 MB, auto-downloaded)            |
+| Tool      | `inspect_message` — deterministic, always runs before response      |
+| Fallback  | If model load fails → useful static response (no crash)             |
+| Fake mode | `SWARM_FAKE=true` — zero imports, zero downloads, zero inference    |
+| Cost      | $0 (your CPU/GPU)                                                   |
+| API keys  | None needed                                                         |
+| Privacy   | Everything runs locally                                             |
+| Analytics | **Not yet instrumented** — Amplitude agent analytics is the goal of this repo, not yet wired in |
+| Domain    | **Generic chat** — grocery-specific prompts/tools not yet added     |
 
 ### Orchestration per turn
 
@@ -56,29 +89,56 @@ Client sends POST /api/chat { message, userId, sessionId }
   ──→ { response, inspection, model }   # JSON response
 ```
 
+This request/response shape (message in, structured inspection + response
+out, with explicit model/fallback/mode state) is the seam where Amplitude
+event tracking is intended to hook in — each turn is already a natural
+analytics event.
+
 ### Fake query modes (test only — gated on SWARM_FAKE=true)
 
 For testing without model download, pass the `mode` in the request body or
 append `?mode=<mode>` to the URL (the frontend forwards it). **The `mode`
-parameter is only honored when `SWARM_FAKE=true`** — clients cannot force fake
-behavior on a real server. In production mode, `mode` is silently ignored.
+parameter is only honored when `SWARM_FAKE=true`** — clients cannot force
+fake behavior on a real server. In production mode, `mode` is silently
+ignored.
 
-| Mode | Description |
-|------|-------------|
-| `success` | Returns a canned success response |
-| `empty` | Returns empty string (tests empty handling) |
-| `error` | Simulates an error (caught, returns fallback) |
-| `overlong` | Returns content >600 chars |
-| `timeout` | Returns immediately (no actual timeout at API level) |
+| Mode       | Description                                          |
+| ---------- | ----------------------------------------------------- |
+| `success`  | Returns a canned success response                     |
+| `empty`    | Returns empty string (tests empty handling)           |
+| `error`    | Simulates an error (caught, returns fallback)         |
+| `overlong` | Returns content >600 chars                            |
+| `timeout`  | Returns immediately (no actual timeout at API level)  |
 
 ### Fallback
 
-If the model fails to download, load, or generate (e.g. missing binary, out of
-memory, incompatible hardware), the server returns a deterministic fallback
-response drawn from a rotating set of templates. The response includes a
-`fallbackLabel` field (e.g. "⚡ Fallback response — model unavailable") which
-the frontend renders as a visible amber badge above the message content.
-The HTTP status is always 200 — the API remains useful after model failures.
+If the model fails to download, load, or generate (e.g. missing binary, out
+of memory, incompatible hardware), the server returns a deterministic
+fallback response drawn from a rotating set of templates. The response
+includes a `fallbackLabel` field (e.g. "⚡ Fallback response — model
+unavailable") which the frontend renders as a visible amber badge above the
+message content. The HTTP status is always 200 — the API remains useful
+after model failures.
+
+---
+
+## Roadmap
+
+To actually fulfill the goal of this repo (a grocery agent instrumented with
+Amplitude agent analytics), the following still needs to be built:
+
+- [ ] Grocery-domain system prompt and/or tools (e.g. add-to-list,
+      product lookup, substitutions, quantity/unit handling)
+- [ ] A grocery catalog or mock product data source for the agent to reason
+      over
+- [ ] Amplitude SDK integration (client and/or server side) to capture
+      agent events — message sent, response generated, tool calls, fallback
+      triggered, session start/end, error rate, etc.
+- [ ] Event taxonomy documenting what gets tracked and why, so the Amplitude
+      data maps back to meaningful agent-quality questions (task completion,
+      drop-off, fallback rate, latency)
+- [ ] A short write-up of findings once the Amplitude instrumentation is in
+      place and generating data
 
 ---
 
@@ -111,7 +171,8 @@ node smoke-model.mjs
 ```
 
 On first run, the server prints a model-loading message and takes extra time
-to download the GGUF file (~491 MB). Subsequent starts load from cache in ~2 s.
+to download the GGUF file (~491 MB). Subsequent starts load from cache in
+~2 s.
 
 > **Note**: This smoke test is intentionally **not** run in CI. It requires
 > a ~491 MB model download on first run and GPU/CPU inference hardware.
@@ -123,6 +184,7 @@ Three test domains covering all fake modes, API contracts, UI rendering,
 and HTTP-level integration:
 
 **API tests** (via `request` fixture):
+
 - Success mode returns expected response structure (response, finishReason, model, inspection)
 - Empty mode returns empty string response
 - Error mode returns fallback response despite simulated error
@@ -131,6 +193,7 @@ and HTTP-level integration:
 - Empty message returns 400 error
 
 **UI tests** (via `page` fixture):
+
 - User and assistant messages render correctly
 - Empty response shows `[No response]` fallback
 - 2000-char input cap enforced
@@ -140,6 +203,7 @@ and HTTP-level integration:
 - Messages respect 85% max-width constraint
 
 **HTTP-level integration tests** (real mode, injected state):
+
 - Client-supplied fake mode cannot force fake behavior on a real server
 - `loading` state returns HTTP 200 with `finishReason: "fallback"`, `fallbackLabel`, and `inspect_message`
 - `fallback` state returns HTTP 200 with useful body and error details
@@ -166,12 +230,17 @@ and HTTP-level integration:
 
 ## Environment variables
 
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `SWARM_FAKE` | *(unset)* | Set to `true` to skip model loading entirely |
+| Variable     | Default   | Description                                  |
+| ------------ | --------- | --------------------------------------------- |
+| `SWARM_FAKE` | *(unset)* | Set to `true` to skip model loading entirely  |
 
 ---
 
+## Attribution
+
+Scaffolded from [amplitude/swarm](https://github.com/amplitude/swarm).
+
 ## License
 
-MIT — see [LICENSE](LICENSE).
+MIT — see [LICENSE](./LICENSE).
+
